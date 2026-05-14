@@ -5,7 +5,10 @@
 #  MOD 1 — S-Box Output Bit Rotation + String Reverse   (inside Feistel rounds)
 #  MOD 2 — Pre-IP Key Whitening XOR                     (before Initial Permutation)
 #  MOD 3 — Post-FP Key Whitening XOR                    (after Final Permutation)
+#  MOD 4 — Key Stretching via SHA-256 Hash Chain        (before key schedule)
 # =============================================================================
+
+import hashlib  # ============================================================ MOD4: needed for SHA-256 key stretching
 
 # ── Conversion Helpers ────────────────────────────────────────────────────────
 def hex2bin(s):
@@ -80,6 +83,29 @@ keyp = [57,49,41,33,25,17,9,1,58,50,42,34,26,18,10,2,59,51,43,35,27,19,11,3,    
 key_comp = [14,17,11,24,1,5,3,28,15,6,21,10,23,19,12,4,26,8,16,7,27,20,13,2,
             41,52,31,37,47,55,30,40,51,45,33,48,44,49,39,56,34,53,46,42,50,36,29,32]   #=================== PERMUTATED CHOICE 2
 shift_table = [1,1,2,2,2,2,2,2,1,2,2,2,2,2,2,1]
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MODIFICATION 4 — Key Stretching via SHA-256 Hash Chain
+# ══════════════════════════════════════════════════════════════════════════════
+def stretch_key(key_hex, iterations=100_000):
+    """
+    MOD4: Hardens the master key against brute-force by running it through
+    a SHA-256 hash chain 'iterations' times before it enters the key schedule.
+
+    Steps:
+      1. Convert hex key string → raw bytes  (e.g. "AABB..." → b'\\xaa\\xbb...')
+      2. Hash the bytes with SHA-256 → get 32 new bytes
+      3. Feed those 32 bytes back into SHA-256 → repeat 'iterations' times
+      4. Take the first 8 bytes of the final hash → convert back to hex string
+
+    Effect on brute-force:
+      Each attacker guess now costs 'iterations' SHA-256 operations instead of 1.
+      At 100,000 iterations: 1B guesses/sec → 10,000 guesses/sec effectively.
+    """
+    k = bytes.fromhex(key_hex)          # Step 1: hex string → raw bytes
+    for _ in range(iterations):         # Step 2-3: hash chain loop
+        k = hashlib.sha256(k).digest()  #   sha256().digest() returns 32 raw bytes
+    return k[:8].hex().upper()          # Step 4: first 8 bytes → hex string (64-bit DES key)
 
 def generate_subkeys(key_hex):
     key_bin = hex2bin(key_hex)
@@ -175,27 +201,42 @@ def decrypt(ct_hex, rkb, rk_hex): # ══════════════�
     wk1, wk2 = make_wk1(rkb), make_wk2(rkb)
     tb = hex2bin(ct_hex)[::-1]                 # Undo MOD1 outer reverse + convert hex to bin
     tb = xor(tb, wk2)                          # Undo MOD3 using whitening key 2
-    tb = permute(tb, initial_perm, 64)          
-    L, R = tb[:32], tb[32:]                    #split 64bit to 32 bit same as encrypting 
-    L, R = feistel_rounds(L, R, rkb[::-1], rk_hex[::-1], True, True)    #[::-1] meaning reverse order shift un-reverse the bits first, then right-rotate 3 instead of left-rotate 3 then reverse
-    ft = permute(L + R, final_perm, 64)         
+    tb = permute(tb, initial_perm, 64)
+    L, R = tb[:32], tb[32:]                    # split 64bit to 32 bit same as encrypting
+    L, R = feistel_rounds(L, R, rkb[::-1], rk_hex[::-1], True, True)    #[::-1]right rotate 3 then reverse
+    ft = permute(L + R, final_perm, 64)
     ft = xor(ft, wk1)                          # Undo MOD2 by xor'ing ft with whitening key 1
     return bin2hex(ft)    # decrypted pt
 
 # ══════════════════════════════════════════════════════════════════════════════
 if __name__ == "__main__":
-    KEY = "AABB09182736CCDD" # ================================================ HARD CODED MASTER KEY E2
-    PT  = "123456ABCD132536"
-    rkb, rk_hex = generate_subkeys(KEY)
+    KEY        = "AABB09182736CCDD"  # ======================================== HARD CODED MASTER KEY
+    PT         = "123456ABCD132536"
+    ITERATIONS = 100_000             # ======================================== MOD4: tune this (higher = slower brute-force)
+
+    # ── MOD4: Key Stretching ──────────────────────────────────────────────────
+    print("=== MOD4: Key Stretching ===")
+    print(f"Original Key  : {KEY}")
+    import time
+    t_start      = time.time()
+    STRETCHED_KEY = stretch_key(KEY, ITERATIONS)   # ========================== STRETCH THE KEY before subkey generation
+    t_end        = time.time()
+    print(f"Stretched Key : {STRETCHED_KEY}  ({ITERATIONS:,} SHA-256 iterations)")
+    print(f"Stretch Time  : {(t_end - t_start)*1000:.1f} ms")
+    print(f"Effective brute-force speed: ~{1_000_000_000 // ITERATIONS:,} guesses/sec  (vs 1,000,000,000 without stretching)")
+
+    # ── All subkeys now derived from STRETCHED_KEY, not raw KEY ──────────────
+    rkb, rk_hex = generate_subkeys(STRETCHED_KEY)  # ========================== MOD4: use stretched key here
     wk1 = make_wk1(rkb)     # ================================================ CALL WK1 CREATION FUNCTION
     wk2 = make_wk2(rkb)     # ================================================ CALL WK2 CREATION FUNCTION
 
     # ── Header ────────────────────────────────────────────────────────────────
-    print("=== DES-3WX (MOD1 + MOD2 + MOD3) ===")
-    print(f"Key : {KEY}")
-    print(f"PT  : {PT}")
-    print(f"WK1 : {bin2hex(wk1)}")
-    print(f"WK2 : {bin2hex(wk2)}")
+    print("\n=== DES-3WX (MOD1 + MOD2 + MOD3 + MOD4) ===")
+    print(f"Key (original) : {KEY}")
+    print(f"Key (stretched): {STRETCHED_KEY}")
+    print(f"PT             : {PT}")
+    print(f"WK1            : {bin2hex(wk1)}")
+    print(f"WK2            : {bin2hex(wk2)}")
 
     # ── Standard DES ──────────────────────────────────────────────────────────
     print("\n=== Standard DES ===")
@@ -213,8 +254,6 @@ if __name__ == "__main__":
     print(f"CT  : {CT}")
     print(f"DT  : {DT}")
     print(f"Match: {'PASS' if DT == PT else 'FAIL'}")
-
-
 
     # ── Plaintext Avalanche ───────────────────────────────────────────────────
     print("\n=== Avalanche: 1-bit Plaintext Change (DES-3WX) ===")
@@ -237,18 +276,22 @@ if __name__ == "__main__":
     # ── Key Avalanche ─────────────────────────────────────────────────────────
     print("\n=== Avalanche: 1-bit Key Change (DES-3WX) ===")
     kb   = hex2bin(KEY)
-    fk   = kb[:8] + ('1' if kb[8]=='0' else '0') + kb[9:]
+    fk   = kb[:8] + ('1' if kb[8]=='0' else '0') + kb[9:]   # takes bit 8 then flips == if 1 > 0 then binary
     KEY2 = bin2hex(fk)
-    rkb2, rk_hex2 = generate_subkeys(KEY2)
+
+    # MOD4: stretch the flipped key too before generating its subkeys
+    STRETCHED_KEY2 = stretch_key(KEY2, ITERATIONS)  # ========================= MOD4: attacker must stretch every guess
+    rkb2, rk_hex2  = generate_subkeys(STRETCHED_KEY2)
+
     rounds_key1 = []
     rounds_key2 = []
     encrypt(PT, rkb,  rk_hex,  collect=rounds_key1)
     CT3 = encrypt(PT, rkb2, rk_hex2, collect=rounds_key2)
     k_diff = bit_diff(hex2bin(CT), hex2bin(CT3))
-    print(f"KEY1: {KEY} -> {CT}")
-    print(f"KEY2: {KEY2} -> {CT3}")
+    print(f"KEY1 (original) : {KEY}  ->  stretched: {STRETCHED_KEY}  ->  CT: {CT}")
+    print(f"KEY2 (1-bit off): {KEY2}  ->  stretched: {STRETCHED_KEY2}  ->  CT: {CT3}")
     print(f"Bits differ: {k_diff}/64 ({k_diff/64*100:.1f}%)")
- 
+
     print(f"\n{'Rnd':>3}  {'Bits Differ':>11}  {'%':>6}")
     print("-" * 25)
     for i in range(16):
