@@ -1,11 +1,11 @@
 # =============================================================================
-#  TRIPLE-MODIFIED DES ALGORITHM
-#  Group Modification Name: "DES-3WX" (3-mod Whitening + XOR-Rotation DES)
+#  Group Modification Name: "SHABUL" 
 #
-#  MOD 1 — S-Box Output Bit Rotation + String Reverse   (inside Feistel rounds)
+#  MOD 1 — Key Stretching via SHA-256 Hash Chain        (before key schedule)
 #  MOD 2 — Pre-IP Key Whitening XOR                     (before Initial Permutation)
-#  MOD 3 — Post-FP Key Whitening XOR                    (after Final Permutation)
-#  MOD 4 — Key Stretching via SHA-256 Hash Chain        (before key schedule)
+#  MOD 3 — S-Box Output Bit Rotation + String Reverse   (inside Feistel rounds)
+#  MOD 4 — Post-FP Key Whitening XOR                    (BEFORE MOD 5)
+#  MOD 5 - FP Reversal                                  (After Final Permutation)
 # =============================================================================
 
 import hashlib  # ============================================================ MOD4: needed for SHA-256 key stretching
@@ -85,7 +85,7 @@ key_comp = [14,17,11,24,1,5,3,28,15,6,21,10,23,19,12,4,26,8,16,7,27,20,13,2,
 shift_table = [1,1,2,2,2,2,2,2,1,2,2,2,2,2,2,1]
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MODIFICATION 4 — Key Stretching via SHA-256 Hash Chain
+# MODIFICATION 1 — Key Stretching via SHA-256 Hash Chain
 # ══════════════════════════════════════════════════════════════════════════════
 def stretch_key(key_hex, iterations=100_000):
     """
@@ -142,7 +142,7 @@ def feistel_f(right, round_key, modified):
         col = bin2dec(xor_x[j*6+1] + xor_x[j*6+2] + xor_x[j*6+3] + xor_x[j*6+4])
         sbox_str += dec2bin(sbox[j][row][col])
     if modified:
-        # MOD1: S-Box Output Bit Rotation + Reverse
+        # MOD4 and 5: S-Box Output Bit Rotation + Reverse
         sbox_str = sbox_str[3:] + sbox_str[:3]   # Left-rotate 3 bits
         sbox_str = sbox_str[::-1]                  # Reverse entire string
     return permute(sbox_str, per, 32)
@@ -156,7 +156,7 @@ def feistel_f_inv(right, round_key, modified):
         col = bin2dec(xor_x[j*6+1] + xor_x[j*6+2] + xor_x[j*6+3] + xor_x[j*6+4])
         sbox_str += dec2bin(sbox[j][row][col])
     if modified:
-        # MOD1 inverse
+        # MOD5 inverse
         sbox_str = sbox_str[::-1]                  # Undo reverse
         sbox_str = sbox_str[-3:] + sbox_str[:-3]  # Right-rotate 3 (undo left-rotate)
     return permute(sbox_str, per, 32)
@@ -185,7 +185,7 @@ def decrypt_std(ct_hex, rkb, rk_hex):
     L, R = feistel_rounds(L, R, rkb[::-1], rk_hex[::-1], True, False)
     return bin2hex(permute(L + R, final_perm, 64))
 
-# ── DES-3WX Encryption/Decryption (all modifications) ────────────────────────
+# Encryption/Decryption (all modifications) ────────────────────────
 def encrypt(pt_hex, rkb, rk_hex, collect=None): # ══════════════════════════════════════════════════════════════════════════════ encryption
     wk1, wk2 = make_wk1(rkb), make_wk2(rkb)
     tb = xor(hex2bin(pt_hex), wk1)             # MOD2: Pre-IP whitening
@@ -193,19 +193,19 @@ def encrypt(pt_hex, rkb, rk_hex, collect=None): # ══════════
     L, R = tb[:32], tb[32:]
     L, R = feistel_rounds(L, R, rkb, rk_hex, False, True, collect)
     ft = permute(L + R, final_perm, 64)
-    ft = xor(ft, wk2)                          # MOD3: Post-FP whitening
-    ft = ft[::-1]                              # MOD1 outer reverse
+    ft = xor(ft, wk2)                          # MOD4: Post-FP whitening
+    ft = ft[::-1]                              # MOD5 outer reverse
     return bin2hex(ft)
 
 def decrypt(ct_hex, rkb, rk_hex): # ══════════════════════════════════════════════════════════════════════════════ decryption
     wk1, wk2 = make_wk1(rkb), make_wk2(rkb)
-    tb = hex2bin(ct_hex)[::-1]                 # Undo MOD1 outer reverse + convert hex to bin
-    tb = xor(tb, wk2)                          # Undo MOD3 using whitening key 2
+    tb = hex2bin(ct_hex)[::-1]                 # Undo MOD5 outer reverse + convert hex to bin
+    tb = xor(tb, wk2)                          # Undo MOD2 using whitening key 2
     tb = permute(tb, initial_perm, 64)
     L, R = tb[:32], tb[32:]                    # split 64bit to 32 bit same as encrypting
     L, R = feistel_rounds(L, R, rkb[::-1], rk_hex[::-1], True, True)    #[::-1]right rotate 3 then reverse
     ft = permute(L + R, final_perm, 64)
-    ft = xor(ft, wk1)                          # Undo MOD2 by xor'ing ft with whitening key 1
+    ft = xor(ft, wk1)                          # Undo MOD3 by xor'ing ft with whitening key 1
     return bin2hex(ft)    # decrypted pt
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -214,7 +214,7 @@ if __name__ == "__main__":
     PT         = "123456ABCD132536"
     ITERATIONS = 100_000             # ======================================== MOD4: tune this (higher = slower brute-force)
 
-    # ── MOD4: Key Stretching ──────────────────────────────────────────────────
+    # ── MOD1: Key Stretching ──────────────────────────────────────────────────
     print("=== MOD4: Key Stretching ===")
     print(f"Original Key  : {KEY}")
     import time
@@ -226,7 +226,7 @@ if __name__ == "__main__":
     print(f"Effective brute-force speed: ~{1_000_000_000 // ITERATIONS:,} guesses/sec  (vs 1,000,000,000 without stretching)")
 
     # ── All subkeys now derived from STRETCHED_KEY, not raw KEY ──────────────
-    rkb, rk_hex = generate_subkeys(STRETCHED_KEY)  # ========================== MOD4: use stretched key here
+    rkb, rk_hex = generate_subkeys(STRETCHED_KEY)  # ========================== MOD1: use stretched key here
     wk1 = make_wk1(rkb)     # ================================================ CALL WK1 CREATION FUNCTION
     wk2 = make_wk2(rkb)     # ================================================ CALL WK2 CREATION FUNCTION
 
@@ -279,8 +279,8 @@ if __name__ == "__main__":
     fk   = kb[:8] + ('1' if kb[8]=='0' else '0') + kb[9:]   # takes bit 8 then flips == if 1 > 0 then binary
     KEY2 = bin2hex(fk)
 
-    # MOD4: stretch the flipped key too before generating its subkeys
-    STRETCHED_KEY2 = stretch_key(KEY2, ITERATIONS)  # ========================= MOD4: attacker must stretch every guess
+    # MOD1: stretch the flipped key too before generating its subkeys
+    STRETCHED_KEY2 = stretch_key(KEY2, ITERATIONS)  
     rkb2, rk_hex2  = generate_subkeys(STRETCHED_KEY2)
 
     rounds_key1 = []
